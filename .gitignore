@@ -1,0 +1,10 @@
+node_modules/
+dist/
+coverage/
+.vite/
+.cache/
+release/
+release-previous/
+*.log
+*.tsbuildinfo
+vite.config.ts.timestamp-*.mjs
