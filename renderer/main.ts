@@ -166,6 +166,7 @@ async function bootstrap(): Promise<void> {
     if (command.type === "config-changed") {
       config = mergeConfig(command.config);
       engine.setConfig(config);
+      showBadge(shell.badge, `Sampling: ${config.fpsCap}Hz`);
       return;
     }
 

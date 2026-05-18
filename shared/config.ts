@@ -2,20 +2,14 @@ import type { Rect, TrailConfig, TrailEffectId } from "./types.js";
 
 export const trailEffects: readonly TrailEffectId[] = [
   "neonRibbon",
-  "particleSpark",
   "cometTail",
-  "smokeTrail",
-  "pixelGhost",
-  "fluidBlob"
+  "prismPulse"
 ];
 
 export const effectLabels: Record<TrailEffectId, string> = {
   neonRibbon: "霓虹丝带",
-  particleSpark: "粒子星尘",
   cometTail: "彗星尾巴",
-  smokeTrail: "烟雾拖尾",
-  pixelGhost: "像素残影",
-  fluidBlob: "液态光团"
+  prismPulse: "棱镜脉冲"
 };
 
 export type EffectRegistryEntry = {
@@ -39,7 +33,7 @@ export const defaultConfig: TrailConfig = {
     toggleInteractive: "CommandOrControl+Alt+P"
   },
   clickThroughDefault: true,
-  fpsCap: 120,
+  fpsCap: 240,
   opacity: 0.92,
   trailLength: 120,
   particleCount: 120,
@@ -109,7 +103,7 @@ export function mergeConfig(config: Partial<TrailConfig> = {}): TrailConfig {
     trailLength: Math.round(clampNumber(config.trailLength, 16, 260, defaultConfig.trailLength)),
     particleCount: Math.round(clampNumber(config.particleCount, 10, 260, defaultConfig.particleCount)),
     lineWidth: clampNumber(config.lineWidth, 2, 44, defaultConfig.lineWidth),
-    fpsCap: Math.round(clampNumber(config.fpsCap, 24, 165, defaultConfig.fpsCap)),
+    fpsCap: Math.round(clampNumber(config.fpsCap, 120, 360, defaultConfig.fpsCap)),
     color: isHexColor(config.color) ? config.color : defaultConfig.color,
     secondaryColor: isHexColor(config.secondaryColor) ? config.secondaryColor : defaultConfig.secondaryColor,
     hotkey: {

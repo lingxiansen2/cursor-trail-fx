@@ -17,12 +17,12 @@ describe("trail config", () => {
     expect(merged.opacity).toBe(1);
     expect(merged.trailLength).toBe(260);
     expect(merged.particleCount).toBe(10);
-    expect(merged.fpsCap).toBe(24);
+    expect(merged.fpsCap).toBe(120);
   });
 
   it("cycles through configured effects", () => {
-    expect(nextTrailEffect("neonRibbon")).toBe("particleSpark");
-    expect(nextTrailEffect(trailEffects.at(-1) ?? "fluidBlob")).toBe(trailEffects[0]);
+    expect(nextTrailEffect("neonRibbon")).toBe("cometTail");
+    expect(nextTrailEffect(trailEffects.at(-1) ?? "prismPulse")).toBe(trailEffects[0]);
   });
 
   it("exposes a preset for every effect id", () => {
@@ -49,7 +49,12 @@ describe("desktop geometry", () => {
 
 describe("CursorSampler", () => {
   it("records cursor speed and limits point count", () => {
-    const sampler = new CursorSampler({ maxPoints: 3, minDistance: 0, maxSegmentLength: 999 });
+    const sampler = new CursorSampler({
+      maxPoints: 3,
+      minDistance: 0,
+      maxSegmentLength: 999,
+      maxInterpolationGapMs: 999
+    });
     sampler.addPoint({ x: 0, y: 0 }, 0);
     sampler.addPoint({ x: 10, y: 0 }, 10);
     sampler.addPoint({ x: 20, y: 0 }, 20);
@@ -76,6 +81,20 @@ describe("CursorSampler", () => {
     const points = sampler.getPoints();
     expect(points.map((point) => point.x)).toEqual([0, 5, 10, 15, 20]);
     expect(points.at(-1)?.speed).toBe(1000);
+  });
+
+  it("adds time-based interpolation points when raw sampling is too sparse", () => {
+    const sampler = new CursorSampler({
+      maxPoints: 20,
+      minDistance: 0,
+      maxSegmentLength: 999,
+      maxInterpolationGapMs: 5
+    });
+    sampler.addPoint({ x: 0, y: 0 }, 0);
+    sampler.addPoint({ x: 20, y: 0 }, 20);
+
+    const points = sampler.getPoints();
+    expect(points.map((point) => point.x)).toEqual([0, 5, 10, 15, 20]);
   });
 
   it("ages and expires stale points", () => {

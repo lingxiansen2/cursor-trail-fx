@@ -5,6 +5,7 @@ coverage/
 .cache/
 release/
 release-previous/
+release-*/
 *.log
 *.tsbuildinfo
 vite.config.ts.timestamp-*.mjs

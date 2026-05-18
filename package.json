@@ -8,7 +8,8 @@
     "dev": "concurrently -k \"npm:dev:renderer\" \"npm:dev:electron\"",
     "dev:renderer": "vite --host 127.0.0.1 --port 5173",
     "dev:electron": "wait-on http://127.0.0.1:5173 && npm.cmd run build:electron && cross-env VITE_DEV_SERVER_URL=http://127.0.0.1:5173 electron .",
-    "build": "npm.cmd run build:electron && vite build",
+    "build:clean": "node scripts/clean-build.mjs",
+    "build": "npm.cmd run build:clean && npm.cmd run build:electron && vite build",
     "build:electron": "tsc -p tsconfig.electron.json",
     "check": "tsc --noEmit -p tsconfig.json && tsc --noEmit -p tsconfig.electron.json",
     "test": "vitest run",
@@ -16,7 +17,10 @@
     "release:prepare": "node scripts/prepare-release.mjs",
     "pack": "npm.cmd run release:prepare && npm.cmd run build && cross-env ELECTRON_BUILDER_CACHE=.cache/electron-builder HTTP_PROXY=http://127.0.0.1:10808 HTTPS_PROXY=http://127.0.0.1:10808 ALL_PROXY=socks5://127.0.0.1:10808 electron-builder --dir",
     "dist": "npm.cmd run release:prepare && npm.cmd run build && cross-env ELECTRON_BUILDER_CACHE=.cache/electron-builder HTTP_PROXY=http://127.0.0.1:10808 HTTPS_PROXY=http://127.0.0.1:10808 ALL_PROXY=socks5://127.0.0.1:10808 electron-builder",
+    "dist:win:setup": "npm.cmd run release:prepare && npm.cmd run build && cross-env ELECTRON_BUILDER_CACHE=.cache/electron-builder HTTP_PROXY=http://127.0.0.1:10808 HTTPS_PROXY=http://127.0.0.1:10808 ALL_PROXY=socks5://127.0.0.1:10808 electron-builder --win nsis",
     "dist:win": "npm.cmd run release:prepare && npm.cmd run build && cross-env ELECTRON_BUILDER_CACHE=.cache/electron-builder HTTP_PROXY=http://127.0.0.1:10808 HTTPS_PROXY=http://127.0.0.1:10808 ALL_PROXY=socks5://127.0.0.1:10808 electron-builder --win"
+    ,
+    "dist:mac": "npm.cmd run release:prepare && npm.cmd run build && electron-builder --mac dmg zip"
   },
   "keywords": [
     "electron",
@@ -48,8 +52,12 @@
       "buildResources": "assets"
     },
     "files": [
-      "dist/**/*",
+      "dist/electron/**/*",
+      "dist/renderer/**/*",
+      "dist/shared/**/*",
       "!dist/**/*.map",
+      "!dist/**/*.exe",
+      "!dist/**/*.blockmap",
       "!dist/package.json"
     ],
     "extraResources": [
@@ -76,6 +84,30 @@
       "icon": "assets/icon.ico",
       "requestedExecutionLevel": "asInvoker"
     },
+    "mac": {
+      "target": [
+        {
+          "target": "dmg",
+          "arch": [
+            "universal"
+          ]
+        },
+        {
+          "target": "zip",
+          "arch": [
+            "universal"
+          ]
+        }
+      ],
+      "category": "public.app-category.utilities",
+      "artifactName": "${productName}-${arch}.${ext}",
+      "icon": "assets/icon.png",
+      "darkModeSupport": true,
+      "hardenedRuntime": true,
+      "gatekeeperAssess": false,
+      "entitlements": "build/entitlements.mac.plist",
+      "entitlementsInherit": "build/entitlements.mac.inherit.plist"
+    },
     "nsis": {
       "artifactName": "${productName} Setup.exe",
       "oneClick": false,
@@ -89,6 +121,9 @@
       "menuCategory": "Cursor Trail FX",
       "shortcutName": "Cursor Trail FX",
       "runAfterFinish": true
+    },
+    "dmg": {
+      "artifactName": "${productName}-${arch}.${ext}"
     },
     "portable": {
       "artifactName": "${productName}-portable.exe"

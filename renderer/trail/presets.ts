@@ -9,11 +9,8 @@ export type TrailPreset = {
 
 const effectDescriptions: Record<TrailEffectId, string> = {
   neonRibbon: "Soft glowing ribbon that follows the recent cursor path.",
-  particleSpark: "Small sparks that scatter from fast pointer movement.",
   cometTail: "A fast tapered tail with a bright cursor head.",
-  smokeTrail: "Slow expanding translucent puffs.",
-  pixelGhost: "Retro square afterimages with stepped fading.",
-  fluidBlob: "Layered luminous blobs that feel like liquid light."
+  prismPulse: "Prismatic pulses that expand along the most recent path."
 };
 
 export const trailPresets: readonly TrailPreset[] = effectRegistry.map((entry) => ({

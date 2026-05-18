@@ -6,12 +6,14 @@ export type CursorSamplerOptions = {
   maxPoints: number;
   minDistance?: number;
   maxSegmentLength?: number;
+  maxInterpolationGapMs?: number;
 };
 
 export class CursorSampler {
-  private readonly maxPoints: number;
+  private maxPoints: number;
   private readonly minDistance: number;
   private readonly maxSegmentLength: number;
+  private maxInterpolationGapMs: number;
   private points: TrailPoint[] = [];
   private lastInputPoint: Point | undefined;
 
@@ -19,6 +21,13 @@ export class CursorSampler {
     this.maxPoints = Math.max(2, Math.round(options.maxPoints));
     this.minDistance = options.minDistance ?? 1.2;
     this.maxSegmentLength = Math.max(2, options.maxSegmentLength ?? 6);
+    this.maxInterpolationGapMs = Math.max(1, options.maxInterpolationGapMs ?? 1000 / 120);
+  }
+
+  configure(options: Pick<CursorSamplerOptions, "maxPoints" | "maxInterpolationGapMs">): void {
+    this.maxPoints = Math.max(2, Math.round(options.maxPoints));
+    this.maxInterpolationGapMs = Math.max(1, options.maxInterpolationGapMs ?? this.maxInterpolationGapMs);
+    this.trimToLimit();
   }
 
   addPoint(point: Point, timeMs: number): TrailPoint | undefined {
@@ -41,7 +50,11 @@ export class CursorSampler {
 
     const deltaMs = Math.max(1, timeMs - previous.timeMs);
     const speed = (distance / deltaMs) * 1000;
-    const segmentCount = Math.max(1, Math.ceil(distance / this.maxSegmentLength));
+    const segmentCount = Math.max(
+      1,
+      Math.ceil(distance / this.maxSegmentLength),
+      Math.ceil(deltaMs / this.maxInterpolationGapMs)
+    );
     let sampled: TrailPoint | undefined;
 
     for (let step = 1; step <= segmentCount; step += 1) {
@@ -88,6 +101,10 @@ export class CursorSampler {
 
   private pushSample(sample: TrailPoint): void {
     this.points.push(sample);
+    this.trimToLimit();
+  }
+
+  private trimToLimit(): void {
     if (this.points.length > this.maxPoints) {
       this.points = this.points.slice(-this.maxPoints);
     }

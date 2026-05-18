@@ -20,7 +20,8 @@ export class TrailEngine {
     this.ctx = ctx;
     this.config = config;
     this.sampler = new CursorSampler({
-      maxPoints: config.trailLength
+      maxPoints: config.trailLength,
+      maxInterpolationGapMs: getInterpolationGapMs(config)
     });
     this.effect = createEffect(config.effect);
   }
@@ -37,6 +38,10 @@ export class TrailEngine {
   setConfig(config: TrailConfig): void {
     const effectChanged = config.effect !== this.config.effect;
     this.config = config;
+    this.sampler.configure({
+      maxPoints: config.trailLength,
+      maxInterpolationGapMs: getInterpolationGapMs(config)
+    });
     if (effectChanged) {
       this.setEffect(config.effect);
     }
@@ -111,4 +116,8 @@ export class TrailEngine {
     this.ctx.clearRect(0, 0, this.canvas.width, this.canvas.height);
     this.ctx.setTransform(transform);
   }
+}
+
+function getInterpolationGapMs(config: TrailConfig): number {
+  return 1000 / Math.max(120, config.fpsCap);
 }

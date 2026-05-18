@@ -46,6 +46,10 @@ let enabled = defaultConfig.enabled;
 let currentEffect: TrailEffectId = defaultConfig.effect;
 let interactive = !defaultConfig.clickThroughDefault;
 let cursorTimer: NodeJS.Timeout | undefined;
+let overlayHealthTimer: NodeJS.Timeout | undefined;
+let suspendOverlayTopmostUntil = 0;
+const overlayTopmostLevel: Parameters<BrowserWindow["setAlwaysOnTop"]>[1] = "floating";
+let isSettingsInteractionActive = false;
 
 const allowedDevServerUrl = "http://127.0.0.1:5173";
 const isDev = !app.isPackaged && process.env.VITE_DEV_SERVER_URL === allowedDevServerUrl;
@@ -138,13 +142,71 @@ function applyOverlayBounds(): void {
 
   const overlayBounds = getOverlayBounds();
   mainWindow.setBounds(overlayBounds, false);
+  reinforceOverlayWindow(false);
   sendCommand({ type: "overlay-bounds-changed", overlayBounds });
+}
+
+function reinforceOverlayWindow(forceVisible: boolean): void {
+  if (!mainWindow || mainWindow.isDestroyed()) {
+    return;
+  }
+
+  if (isSettingsInteractionActive || Date.now() < suspendOverlayTopmostUntil) {
+    mainWindow.setAlwaysOnTop(false);
+    mainWindow.setIgnoreMouseEvents(!interactive, { forward: true });
+    return;
+  }
+
+  mainWindow.setAlwaysOnTop(true, overlayTopmostLevel);
+  mainWindow.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true });
+  mainWindow.setSkipTaskbar(true);
+  mainWindow.setFocusable(false);
+  mainWindow.setIgnoreMouseEvents(!interactive, { forward: true });
+
+  if (forceVisible && !mainWindow.isVisible()) {
+    mainWindow.showInactive();
+    return;
+  }
+
+  if (forceVisible) {
+    mainWindow.showInactive();
+  }
+}
+
+function suspendOverlayTopmost(durationMs: number): void {
+  suspendOverlayTopmostUntil = Math.max(suspendOverlayTopmostUntil, Date.now() + durationMs);
+}
+
+function setSettingsInteractionActive(active: boolean): void {
+  isSettingsInteractionActive = active;
+  if (!mainWindow || mainWindow.isDestroyed()) {
+    return;
+  }
+
+  if (active) {
+    mainWindow.setAlwaysOnTop(false);
+    mainWindow.setIgnoreMouseEvents(true, { forward: true });
+    return;
+  }
+
+  reinforceOverlayWindow(true);
+}
+
+function startOverlayHealthLoop(): void {
+  if (overlayHealthTimer) {
+    clearInterval(overlayHealthTimer);
+  }
+
+  overlayHealthTimer = setInterval(() => {
+    reinforceOverlayWindow(false);
+  }, 3000);
 }
 
 function setInteractive(nextInteractive: boolean): void {
   interactive = nextInteractive;
   if (mainWindow && !mainWindow.isDestroyed()) {
     mainWindow.setIgnoreMouseEvents(!interactive, { forward: true });
+    reinforceOverlayWindow(false);
   }
   sendCommand({ type: "interactive-changed", interactive });
   updateTrayMenu();
@@ -285,6 +347,8 @@ function createTray(): void {
 
 async function openSettingsWindow(): Promise<void> {
   if (settingsWindow && !settingsWindow.isDestroyed()) {
+    suspendOverlayTopmost(2000);
+    setSettingsInteractionActive(true);
     settingsWindow.focus();
     return;
   }
@@ -315,8 +379,21 @@ async function openSettingsWindow(): Promise<void> {
   settingsWindow.setMenu(null);
   settingsWindow.webContents.on("will-navigate", (event) => event.preventDefault());
   settingsWindow.webContents.on("will-redirect", (event) => event.preventDefault());
+  settingsWindow.on("focus", () => {
+    setSettingsInteractionActive(true);
+    suspendOverlayTopmost(2500);
+  });
+  settingsWindow.on("show", () => {
+    setSettingsInteractionActive(true);
+    suspendOverlayTopmost(2500);
+  });
+  settingsWindow.on("blur", () => {
+    suspendOverlayTopmost(1200);
+  });
   settingsWindow.on("closed", () => {
     settingsWindow = undefined;
+    setSettingsInteractionActive(false);
+    setTimeout(() => reinforceOverlayWindow(true), 120);
   });
 
   if (isDev) {
@@ -324,6 +401,8 @@ async function openSettingsWindow(): Promise<void> {
   } else {
     await settingsWindow.loadFile(join(__dirname, "..", "..", "renderer", "settings.html"));
   }
+  setSettingsInteractionActive(true);
+  suspendOverlayTopmost(2500);
 }
 
 async function createWindow(): Promise<void> {
@@ -352,17 +431,29 @@ async function createWindow(): Promise<void> {
     }
   });
 
-  mainWindow.setAlwaysOnTop(true, "screen-saver");
+  mainWindow.setAlwaysOnTop(true, overlayTopmostLevel);
   mainWindow.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true });
   mainWindow.setMenu(null);
   mainWindow.webContents.on("will-navigate", (event) => event.preventDefault());
   mainWindow.webContents.on("will-redirect", (event) => event.preventDefault());
+  mainWindow.on("show", () => reinforceOverlayWindow(false));
+  mainWindow.on("restore", () => reinforceOverlayWindow(true));
+  mainWindow.on("hide", () => {
+    setTimeout(() => reinforceOverlayWindow(true), 120);
+  });
+  mainWindow.on("blur", () => {
+    if (settingsWindow && !settingsWindow.isDestroyed() && settingsWindow.isFocused()) {
+      suspendOverlayTopmost(1200);
+      return;
+    }
+    setTimeout(() => reinforceOverlayWindow(false), 60);
+  });
   mainWindow.on("closed", () => {
     mainWindow = undefined;
   });
   mainWindow.once("ready-to-show", () => {
     applyOverlayBounds();
-    mainWindow?.showInactive();
+    reinforceOverlayWindow(true);
     setInteractive(!config.clickThroughDefault);
   });
 
@@ -389,7 +480,8 @@ function registerHotkeys(): void {
 }
 
 function startCursorLoop(): void {
-  const intervalMs = Math.max(4, Math.round(1000 / config.fpsCap));
+  const sampleRateHz = Math.max(120, config.fpsCap);
+  const intervalMs = Math.max(3, Math.round(1000 / sampleRateHz));
   let expectedTime = performance.now();
   let lastCursor: { x: number; y: number } | undefined;
 
@@ -491,10 +583,20 @@ app.whenReady().then(async () => {
   await createWindow();
   registerHotkeys();
   startCursorLoop();
+  startOverlayHealthLoop();
 
-  screen.on("display-added", applyOverlayBounds);
-  screen.on("display-removed", applyOverlayBounds);
-  screen.on("display-metrics-changed", applyOverlayBounds);
+  screen.on("display-added", () => {
+    applyOverlayBounds();
+    setTimeout(() => reinforceOverlayWindow(true), 100);
+  });
+  screen.on("display-removed", () => {
+    applyOverlayBounds();
+    setTimeout(() => reinforceOverlayWindow(true), 100);
+  });
+  screen.on("display-metrics-changed", () => {
+    applyOverlayBounds();
+    setTimeout(() => reinforceOverlayWindow(true), 100);
+  });
 
   app.on("activate", async () => {
     if (BrowserWindow.getAllWindows().length === 0) {
@@ -510,6 +612,9 @@ app.whenReady().then(async () => {
 app.on("will-quit", () => {
   if (cursorTimer) {
     clearTimeout(cursorTimer);
+  }
+  if (overlayHealthTimer) {
+    clearInterval(overlayHealthTimer);
   }
   globalShortcut.unregisterAll();
 });

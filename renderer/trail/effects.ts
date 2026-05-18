@@ -1,19 +1,13 @@
 import { clamp, effectLabels, maxPointAgeMs } from "../../shared/config.js";
 import type { TrailConfig, TrailEffectId } from "../../shared/types.js";
-import type { TrailEffectPlugin, TrailParticle, TrailPoint } from "./types.js";
+import type { TrailEffectPlugin, TrailPoint } from "./types.js";
 
 export function createEffect(effect: TrailEffectId): TrailEffectPlugin {
   switch (effect) {
-    case "particleSpark":
-      return createParticleSpark();
     case "cometTail":
       return createCometTail();
-    case "smokeTrail":
-      return createSmokeTrail();
-    case "pixelGhost":
-      return createPixelGhost();
-    case "fluidBlob":
-      return createFluidBlob();
+    case "prismPulse":
+      return createPrismPulse();
     case "neonRibbon":
     default:
       return createNeonRibbon();
@@ -99,240 +93,46 @@ function createCometTail(): TrailEffectPlugin {
   };
 }
 
-function createParticleSpark(): TrailEffectPlugin {
-  let particles: TrailParticle[] = [];
-
+function createPrismPulse(): TrailEffectPlugin {
   return {
-    id: "particleSpark",
-    label: effectLabels.particleSpark,
-    reset: () => {
-      particles = [];
-    },
-    emit: (point, previous, config) => {
-      if (!previous) {
-        return;
-      }
-      const intensity = clamp(point.speed / 1500, 0.15, 1.5);
-      const count = Math.max(1, Math.round(3 * intensity));
-      for (let i = 0; i < count; i += 1) {
-        const angle = Math.atan2(point.y - previous.y, point.x - previous.x) + Math.PI + randomRange(-0.9, 0.9);
-        const force = randomRange(55, 180) * intensity;
-        particles.push({
-          x: point.x,
-          y: point.y,
-          vx: Math.cos(angle) * force,
-          vy: Math.sin(angle) * force + randomRange(-30, 30),
-          lifeMs: randomRange(320, 680),
-          maxLifeMs: 680,
-          size: randomRange(2, 5.5) * intensity,
-          spin: randomRange(-0.4, 0.4)
-        });
-      }
-      particles = particles.slice(-config.particleCount);
-    },
-    update: (deltaMs) => {
-      particles = updateParticles(particles, deltaMs, 18);
-    },
-    draw: (ctx, points, config) => {
-      drawCometHint(ctx, points, config, 0.28);
-      const primary = parseColor(config.color);
-      const secondary = parseColor(config.secondaryColor);
-      ctx.save();
-      ctx.globalCompositeOperation = "lighter";
-      for (const particle of particles) {
-        const life = particle.lifeMs / particle.maxLifeMs;
-        ctx.fillStyle = colorWithAlphaFast(life > 0.55 ? primary : secondary, life * config.opacity);
-        ctx.shadowColor = config.color;
-        ctx.shadowBlur = 10 * life;
-        ctx.beginPath();
-        ctx.arc(particle.x, particle.y, Math.max(0.5, particle.size * life), 0, Math.PI * 2);
-        ctx.fill();
-      }
-      ctx.restore();
-    }
-  };
-}
-
-function createSmokeTrail(): TrailEffectPlugin {
-  let particles: TrailParticle[] = [];
-  let cachedBlob: HTMLCanvasElement | null = null;
-  let cachedColor = "";
-  let cachedSecondary = "";
-
-  function getBlobCanvas(color: string, secondaryColor: string): HTMLCanvasElement {
-    if (cachedBlob && cachedColor === color && cachedSecondary === secondaryColor) {
-      return cachedBlob;
-    }
-
-    const size = 64;
-    const canvas = document.createElement("canvas");
-    canvas.width = size;
-    canvas.height = size;
-    const ctx = canvas.getContext("2d")!;
-    const center = size / 2;
-    const gradient = ctx.createRadialGradient(center, center, 0, center, center, center);
-    gradient.addColorStop(0, colorWithAlpha(color, 1));
-    gradient.addColorStop(0.7, colorWithAlpha(secondaryColor, 0.35));
-    gradient.addColorStop(1, colorWithAlpha(secondaryColor, 0));
-    ctx.fillStyle = gradient;
-    ctx.beginPath();
-    ctx.arc(center, center, center, 0, Math.PI * 2);
-    ctx.fill();
-
-    cachedBlob = canvas;
-    cachedColor = color;
-    cachedSecondary = secondaryColor;
-    return canvas;
-  }
-
-  return {
-    id: "smokeTrail",
-    label: effectLabels.smokeTrail,
-    reset: () => {
-      particles = [];
-    },
-    emit: (point, previous, config) => {
-      if (!previous) {
-        return;
-      }
-      const speed = clamp(point.speed / 1200, 0.2, 1);
-      particles.push({
-        x: point.x + randomRange(-4, 4),
-        y: point.y + randomRange(-4, 4),
-        vx: randomRange(-16, 16),
-        vy: randomRange(-26, 6),
-        lifeMs: randomRange(700, 1100),
-        maxLifeMs: 1100,
-        size: randomRange(10, 24) * speed,
-        spin: randomRange(-0.3, 0.3)
-      });
-      particles = particles.slice(-config.particleCount);
-    },
-    update: (deltaMs) => {
-      particles = updateParticles(particles, deltaMs, 7);
-    },
-    draw: (ctx, _points, config) => {
-      const blobCanvas = getBlobCanvas(config.color, config.secondaryColor);
-      ctx.save();
-      ctx.globalCompositeOperation = "source-over";
-      for (const particle of particles) {
-        const life = particle.lifeMs / particle.maxLifeMs;
-        const radius = particle.size * (0.42 + life * 1.05);
-        const alpha = Math.pow(life, 1.35) * config.opacity * 0.3;
-        const drawSize = radius * 2;
-        ctx.globalAlpha = alpha;
-        ctx.drawImage(blobCanvas, particle.x - radius, particle.y - radius, drawSize, drawSize);
-      }
-      ctx.globalAlpha = 1;
-      ctx.restore();
-    }
-  };
-}
-
-function createPixelGhost(): TrailEffectPlugin {
-  let particles: TrailParticle[] = [];
-
-  return {
-    id: "pixelGhost",
-    label: effectLabels.pixelGhost,
-    reset: () => {
-      particles = [];
-    },
-    emit: (point, previous, config) => {
-      if (!previous) {
-        return;
-      }
-      const distance = Math.hypot(point.x - previous.x, point.y - previous.y);
-      const count = Math.max(1, Math.round(distance / 16));
-      for (let i = 0; i < count; i += 1) {
-        particles.push({
-          x: Math.round((point.x + randomRange(-9, 9)) / 6) * 6,
-          y: Math.round((point.y + randomRange(-9, 9)) / 6) * 6,
-          vx: randomRange(-8, 8),
-          vy: randomRange(-8, 8),
-          lifeMs: randomRange(260, 520),
-          maxLifeMs: 520,
-          size: randomRange(5, 13),
-          spin: randomRange(-0.2, 0.2)
-        });
-      }
-      particles = particles.slice(-config.particleCount);
-    },
-    update: (deltaMs) => {
-      particles = updateParticles(particles, deltaMs, 0);
-    },
-    draw: (ctx, points, config) => {
-      drawCometHint(ctx, points, config, 0.16);
-      const primary = parseColor(config.color);
-      const secondary = parseColor(config.secondaryColor);
-      ctx.save();
-      ctx.imageSmoothingEnabled = false;
-      for (const particle of particles) {
-        const life = particle.lifeMs / particle.maxLifeMs;
-        ctx.fillStyle = colorWithAlphaFast(life > 0.5 ? primary : secondary, life * config.opacity * 0.85);
-        ctx.fillRect(particle.x, particle.y, particle.size, particle.size);
-      }
-      ctx.restore();
-    }
-  };
-}
-
-function createFluidBlob(): TrailEffectPlugin {
-  let cachedBlob: HTMLCanvasElement | null = null;
-  let cachedColor = "";
-  let cachedSecondary = "";
-
-  function getBlobCanvas(color: string, secondaryColor: string): HTMLCanvasElement {
-    if (cachedBlob && cachedColor === color && cachedSecondary === secondaryColor) {
-      return cachedBlob;
-    }
-
-    const size = 64;
-    const canvas = document.createElement("canvas");
-    canvas.width = size;
-    canvas.height = size;
-    const ctx = canvas.getContext("2d")!;
-    const center = size / 2;
-    const gradient = ctx.createRadialGradient(center, center, 0, center, center, center);
-    gradient.addColorStop(0, colorWithAlpha(color, 1));
-    gradient.addColorStop(0.48, colorWithAlpha(secondaryColor, 0.38));
-    gradient.addColorStop(1, colorWithAlpha(secondaryColor, 0));
-    ctx.fillStyle = gradient;
-    ctx.beginPath();
-    ctx.arc(center, center, center, 0, Math.PI * 2);
-    ctx.fill();
-
-    cachedBlob = canvas;
-    cachedColor = color;
-    cachedSecondary = secondaryColor;
-    return canvas;
-  }
-
-  return {
-    id: "fluidBlob",
-    label: effectLabels.fluidBlob,
+    id: "prismPulse",
+    label: effectLabels.prismPulse,
     reset: noop,
     emit: noop,
     update: noop,
     draw: (ctx, points, config) => {
-      const blobCanvas = getBlobCanvas(config.color, config.secondaryColor);
+      if (points.length < 2) {
+        drawCursorGlow(ctx, points.at(-1), config);
+        return;
+      }
+
+      const primary = parseColor(config.color);
+      const secondary = parseColor(config.secondaryColor);
       ctx.save();
       ctx.globalCompositeOperation = "lighter";
       for (const [index, point] of points.entries()) {
         const life = pointRecency(point, index, points.length);
-        const radius = Math.max(3, config.lineWidth * (0.2 + Math.pow(life, 1.35) * 2.05));
-        const alpha = Math.pow(life, 1.2) * config.opacity * 0.52;
-        const drawSize = radius * 2;
-        ctx.globalAlpha = alpha;
-        ctx.drawImage(blobCanvas, point.x - radius, point.y - radius, drawSize, drawSize);
+        if (life < 0.08) {
+          continue;
+        }
+        const radius = Math.max(2.5, config.lineWidth * (0.16 + life * 0.68));
+        ctx.strokeStyle = colorWithAlphaFast(index % 2 === 0 ? primary : secondary, life * config.opacity * 0.48);
+        ctx.lineWidth = Math.max(1, config.lineWidth * 0.18);
+        ctx.beginPath();
+        ctx.arc(point.x, point.y, radius, 0, Math.PI * 2);
+        ctx.stroke();
       }
-      ctx.globalAlpha = 1;
+      drawFadingPathFast(ctx, points, {
+        color: primary,
+        width: config.lineWidth * 0.52,
+        alpha: config.opacity * 0.52,
+        shadowBlur: 10
+      });
       ctx.restore();
-      drawCursorGlow(ctx, points.at(-1), config);
+      drawCursorGlow(ctx, points.at(-1), config, 0.95);
     }
   };
 }
-
 function drawFadingPath(
   ctx: CanvasRenderingContext2D,
   points: TrailPoint[],
@@ -493,25 +293,6 @@ function drawCursorGlow(
   ctx.restore();
 }
 
-function updateParticles(particles: TrailParticle[], deltaMs: number, drift: number): TrailParticle[] {
-  const dt = deltaMs / 1000;
-  let write = 0;
-  for (let read = 0; read < particles.length; read++) {
-    const p = particles[read];
-    p.lifeMs -= deltaMs;
-    if (p.lifeMs <= 0) continue;
-    p.x += p.vx * dt;
-    p.y += p.vy * dt;
-    p.vx *= 0.985;
-    p.vy *= 0.985 - drift * dt;
-    p.size += p.spin * deltaMs;
-    if (write !== read) particles[write] = p;
-    write++;
-  }
-  particles.length = write;
-  return particles;
-}
-
 type ParsedColor = { r: number; g: number; b: number };
 
 function parseColor(color: string): ParsedColor {
@@ -541,10 +322,6 @@ function colorWithAlpha(color: string, alpha: number): string {
     return `rgb(${red} ${green} ${blue} / ${normalizedAlpha})`;
   }
   return color;
-}
-
-function randomRange(min: number, max: number): number {
-  return min + Math.random() * (max - min);
 }
 
 function noop(): void {

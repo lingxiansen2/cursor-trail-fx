@@ -104,7 +104,7 @@ describe("TrailEngine", () => {
     const engine = new TrailEngine(canvas);
     engine.pushCursor({ x: 0, y: 0 }, 0);
     engine.pushCursor({ x: 10, y: 0 }, 10);
-    engine.setEffect("particleSpark");
+    engine.setEffect("prismPulse");
     engine.pushCursor({ x: 20, y: 0 }, 20);
     expect(() => engine.render()).not.toThrow();
   });

@@ -16,11 +16,8 @@ export type Rect = Point & Size;
 
 export type TrailEffectId =
   | "neonRibbon"
-  | "particleSpark"
   | "cometTail"
-  | "smokeTrail"
-  | "pixelGhost"
-  | "fluidBlob";
+  | "prismPulse";
 
 export type HotkeyConfig = {
   nextEffect: string;

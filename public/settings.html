@@ -346,11 +346,11 @@
         </div>
         <div class="row">
           <div class="row-label">
-            帧率上限
-            <small>每秒最大渲染帧数</small>
+            补帧采样率
+            <small>实际显示跟随屏幕刷新率，低刷屏按该速率插值补点</small>
           </div>
-          <input type="range" id="fpsCap" min="24" max="165" step="1" />
-          <span class="range-value" id="fpsCap-val">120fps</span>
+          <input type="range" id="fpsCap" min="120" max="360" step="5" />
+          <span class="range-value" id="fpsCap-val">240Hz</span>
         </div>
       </section>
 

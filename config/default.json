@@ -7,7 +7,7 @@
     "toggleInteractive": "CommandOrControl+Alt+P"
   },
   "clickThroughDefault": true,
-  "fpsCap": 120,
+  "fpsCap": 240,
   "opacity": 0.92,
   "trailLength": 120,
   "particleCount": 120,

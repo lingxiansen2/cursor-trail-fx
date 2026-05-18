@@ -24,11 +24,8 @@ npm.cmd run build
 ## Effects
 
 - Neon ribbon
-- Particle spark
 - Comet tail
-- Smoke trail
-- Pixel ghost
-- Fluid blob
+- Prism pulse
 
 ## Notes
 

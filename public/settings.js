@@ -95,9 +95,9 @@ async function init() {
   $("lineWidth-val").textContent = `${$("lineWidth").value}px`;
   bindSlider("lineWidth", (value) => `${value}px`);
 
-  $("fpsCap").value = config.fpsCap ?? 120;
-  $("fpsCap-val").textContent = `${$("fpsCap").value}fps`;
-  bindSlider("fpsCap", (value) => `${value}fps`);
+  $("fpsCap").value = config.fpsCap ?? 240;
+  $("fpsCap-val").textContent = `${$("fpsCap").value}Hz`;
+  bindSlider("fpsCap", (value) => `${value}Hz`);
 
   $("enabled").checked = config.enabled !== false;
   $("clickThroughDefault").checked = config.clickThroughDefault !== false;
