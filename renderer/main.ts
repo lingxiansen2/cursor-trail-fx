@@ -194,12 +194,20 @@ async function bootstrap(): Promise<void> {
         ...cursorSnapshot,
         overlayBounds: command.overlayBounds
       };
+      overlayOffset.x = command.overlayBounds.x;
+      overlayOffset.y = command.overlayBounds.y;
       resize();
       return;
     }
 
     if (command.type === "hotkey-error") {
       showBadge(shell.badge, `Hotkey unavailable: ${command.accelerator}`, true);
+      return;
+    }
+
+    if (command.type === "reset-trail") {
+      engine.clear();
+      lastFrame = performance.now();
     }
   });
 

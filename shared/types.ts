@@ -77,6 +77,9 @@ export type TrailCommand =
   | {
       type: "cursor-position";
       position: CursorPosition;
+    }
+  | {
+      type: "reset-trail";
     };
 
 export type TrailRuntimeApi = {

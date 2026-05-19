@@ -5,6 +5,7 @@ import {
   ipcMain,
   Menu,
   nativeImage,
+  powerMonitor,
   screen,
   shell,
   Tray
@@ -47,9 +48,12 @@ let currentEffect: TrailEffectId = defaultConfig.effect;
 let interactive = !defaultConfig.clickThroughDefault;
 let cursorTimer: NodeJS.Timeout | undefined;
 let overlayHealthTimer: NodeJS.Timeout | undefined;
+let secureDesktopRecoveryTimer: NodeJS.Timeout | undefined;
+let secureDesktopWatchdogTimer: NodeJS.Timeout | undefined;
 let suspendOverlayTopmostUntil = 0;
 const overlayTopmostLevel: Parameters<BrowserWindow["setAlwaysOnTop"]>[1] = "floating";
 let isSettingsInteractionActive = false;
+let isSecureDesktopSuspended = false;
 
 const allowedDevServerUrl = "http://127.0.0.1:5173";
 const isDev = !app.isPackaged && process.env.VITE_DEV_SERVER_URL === allowedDevServerUrl;
@@ -151,6 +155,12 @@ function reinforceOverlayWindow(forceVisible: boolean): void {
     return;
   }
 
+  if (isSecureDesktopSuspended) {
+    mainWindow.setAlwaysOnTop(false);
+    mainWindow.setIgnoreMouseEvents(true, { forward: true });
+    return;
+  }
+
   if (isSettingsInteractionActive || Date.now() < suspendOverlayTopmostUntil) {
     mainWindow.setAlwaysOnTop(false);
     mainWindow.setIgnoreMouseEvents(!interactive, { forward: true });
@@ -202,6 +212,123 @@ function startOverlayHealthLoop(): void {
   }, 3000);
 }
 
+function stopCursorLoop(): void {
+  if (cursorTimer) {
+    clearTimeout(cursorTimer);
+    cursorTimer = undefined;
+  }
+}
+
+function stopOverlayHealthLoop(): void {
+  if (overlayHealthTimer) {
+    clearInterval(overlayHealthTimer);
+    overlayHealthTimer = undefined;
+  }
+}
+
+function clearSecureDesktopRecoveryTimer(): void {
+  if (secureDesktopRecoveryTimer) {
+    clearTimeout(secureDesktopRecoveryTimer);
+    secureDesktopRecoveryTimer = undefined;
+  }
+}
+
+function startSecureDesktopWatchdog(): void {
+  if (secureDesktopWatchdogTimer) {
+    clearInterval(secureDesktopWatchdogTimer);
+  }
+
+  secureDesktopWatchdogTimer = setInterval(() => {
+    if (!isSecureDesktopSuspended) {
+      return;
+    }
+
+    const idleState = powerMonitor.getSystemIdleState(1);
+    if (idleState !== "locked" && idleState !== "unknown") {
+      scheduleSecureDesktopRecovery(`watchdog:${idleState}`, 200);
+    }
+  }, 1500);
+}
+
+function stopSecureDesktopWatchdog(): void {
+  if (secureDesktopWatchdogTimer) {
+    clearInterval(secureDesktopWatchdogTimer);
+    secureDesktopWatchdogTimer = undefined;
+  }
+}
+
+function resetRendererTrail(): void {
+  sendCommand({ type: "reset-trail" });
+}
+
+function pauseForSecureDesktop(reason: string): void {
+  isSecureDesktopSuspended = true;
+  clearSecureDesktopRecoveryTimer();
+  startSecureDesktopWatchdog();
+  setSettingsInteractionActive(false);
+  stopCursorLoop();
+  stopOverlayHealthLoop();
+  resetRendererTrail();
+
+  if (settingsWindow && !settingsWindow.isDestroyed()) {
+    settingsWindow.close();
+  }
+
+  if (mainWindow && !mainWindow.isDestroyed()) {
+    const staleWindow = mainWindow;
+    mainWindow = undefined;
+    staleWindow.destroy();
+  }
+
+  console.info(`[secure-desktop] paused overlay: ${reason}`);
+}
+
+async function recreateOverlayWindow(): Promise<void> {
+  if (mainWindow && !mainWindow.isDestroyed()) {
+    const staleWindow = mainWindow;
+    mainWindow = undefined;
+    staleWindow.destroy();
+  }
+
+  await createWindow();
+}
+
+async function recoverFromSecureDesktop(reason: string): Promise<void> {
+  clearSecureDesktopRecoveryTimer();
+  stopSecureDesktopWatchdog();
+
+  if (!app.isReady()) {
+    return;
+  }
+
+  isSecureDesktopSuspended = false;
+  setSettingsInteractionActive(false);
+  globalShortcut.unregisterAll();
+  await recreateOverlayWindow();
+  applyOverlayBounds();
+  reinforceOverlayWindow(true);
+  if (mainWindow && !mainWindow.isDestroyed()) {
+    mainWindow.show();
+  }
+  registerHotkeys();
+  startCursorLoop();
+  startOverlayHealthLoop();
+  resetRendererTrail();
+
+  console.info(`[secure-desktop] recovered overlay: ${reason}`);
+}
+
+function scheduleSecureDesktopRecovery(reason: string, delayMs = 900): void {
+  if (!isSecureDesktopSuspended) {
+    return;
+  }
+
+  clearSecureDesktopRecoveryTimer();
+  secureDesktopRecoveryTimer = setTimeout(() => {
+    void recoverFromSecureDesktop(reason).catch(console.error);
+  }, delayMs);
+}
+
 function setInteractive(nextInteractive: boolean): void {
   interactive = nextInteractive;
   if (mainWindow && !mainWindow.isDestroyed()) {
@@ -235,10 +362,7 @@ function switchToNextEffect(): TrailEffectId {
 }
 
 function restartCursorLoop(): void {
-  if (cursorTimer) {
-    clearTimeout(cursorTimer);
-    cursorTimer = undefined;
-  }
+  stopCursorLoop();
   startCursorLoop();
 }
 
@@ -436,12 +560,21 @@ async function createWindow(): Promise<void> {
   mainWindow.setMenu(null);
   mainWindow.webContents.on("will-navigate", (event) => event.preventDefault());
   mainWindow.webContents.on("will-redirect", (event) => event.preventDefault());
+  mainWindow.webContents.on("render-process-gone", () => {
+    scheduleSecureDesktopRecovery("render-process-gone", 300);
+  });
   mainWindow.on("show", () => reinforceOverlayWindow(false));
   mainWindow.on("restore", () => reinforceOverlayWindow(true));
   mainWindow.on("hide", () => {
+    if (isSecureDesktopSuspended) {
+      return;
+    }
     setTimeout(() => reinforceOverlayWindow(true), 120);
   });
   mainWindow.on("blur", () => {
+    if (isSecureDesktopSuspended) {
+      return;
+    }
     if (settingsWindow && !settingsWindow.isDestroyed() && settingsWindow.isFocused()) {
       suspendOverlayTopmost(1200);
       return;
@@ -480,6 +613,10 @@ function registerHotkeys(): void {
 }
 
 function startCursorLoop(): void {
+  if (isSecureDesktopSuspended) {
+    return;
+  }
+
   const sampleRateHz = Math.max(120, config.fpsCap);
   const intervalMs = Math.max(3, Math.round(1000 / sampleRateHz));
   let expectedTime = performance.now();
@@ -598,6 +735,25 @@ app.whenReady().then(async () => {
     setTimeout(() => reinforceOverlayWindow(true), 100);
   });
 
+  powerMonitor.on("lock-screen", () => {
+    pauseForSecureDesktop("lock-screen");
+  });
+  powerMonitor.on("suspend", () => {
+    pauseForSecureDesktop("suspend");
+  });
+  powerMonitor.on("unlock-screen", () => {
+    scheduleSecureDesktopRecovery("unlock-screen");
+  });
+  powerMonitor.on("resume", () => {
+    scheduleSecureDesktopRecovery("resume", 1200);
+  });
+  powerMonitor.on("user-did-resign-active", () => {
+    pauseForSecureDesktop("user-did-resign-active");
+  });
+  powerMonitor.on("user-did-become-active", () => {
+    scheduleSecureDesktopRecovery("user-did-become-active", 700);
+  });
+
   app.on("activate", async () => {
     if (BrowserWindow.getAllWindows().length === 0) {
       await createWindow();
@@ -610,12 +766,10 @@ app.whenReady().then(async () => {
 });
 
 app.on("will-quit", () => {
-  if (cursorTimer) {
-    clearTimeout(cursorTimer);
-  }
-  if (overlayHealthTimer) {
-    clearInterval(overlayHealthTimer);
-  }
+  stopCursorLoop();
+  stopOverlayHealthLoop();
+  clearSecureDesktopRecoveryTimer();
+  stopSecureDesktopWatchdog();
   globalShortcut.unregisterAll();
 });
 
