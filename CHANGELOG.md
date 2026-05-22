@@ -4,6 +4,64 @@ All notable changes to Cursor Trail FX are documented here.
 
 ---
 
+## [Unreleased] - 2026-05-22
+
+### Fixed
+
+- **Main process froze for up to 2 minutes during UAC consent prompts**
+  (`electron/main/inputDesktop.ts` *(new)*, `electron/main/main.ts`)
+
+  Electron's `powerMonitor` surfaces `lock-screen` / `unlock-screen` reliably
+  (it sits on top of `WTSRegisterSessionNotification`), but **never fires for
+  UAC consent prompts**. When UAC switched the input desktop to `Winlogon`,
+  the overlay health loop (every 3 s) and the cursor sampling loop (~120 Hz)
+  kept calling Win32 setters — `SetAlwaysOnTop`, `SetVisibleOnAllWorkspaces`,
+  `SetSkipTaskbar`, `SetFocusable`, `SetIgnoreMouseEvents` — against a window
+  whose desktop was no longer the input desktop. Each call serialized on the
+  Win32 side and stacked up, freezing the main thread until the UAC prompt's
+  auto-cancel timeout (≈120 s) released them.
+
+  **Fix:**
+  - Added `electron/main/inputDesktop.ts`. It spawns a long-lived PowerShell
+    child that polls `user32!OpenInputDesktop` + `GetUserObjectInformationW`
+    every 150 ms and emits a line on stdout when the input desktop name
+    changes. Both Win32 calls return immediately even from a process that is
+    not on the input desktop, so the probe itself cannot stall. No native
+    module is required — PowerShell does the P/Invoke via `Add-Type`.
+  - Added `isInputDesktopForeign()` in `main.ts`. `reinforceOverlayWindow`
+    and the cursor sampling tick both call it at entry and short-circuit on
+    Windows when the input desktop is anything other than `Default`. This
+    keeps every periodic Win32 setter off the main thread during UAC.
+  - Added `disposeOverlayWindow(staleWindow)` that performs `hide()`
+    synchronously and defers `destroy()` to `setImmediate` inside a
+    `try/catch`. Both `pauseForSecureDesktop` and `recreateOverlayWindow`
+    now go through it so the heavy `DestroyWindow` call cannot hold the
+    main thread while the input desktop is foreign.
+  - `inputDesktopProbe.on("change")` is wired into `app.whenReady` ahead of
+    the existing `powerMonitor` listeners — a transition to `Default`
+    schedules recovery with a 150 ms debounce, anything else triggers
+    `pauseForSecureDesktop`. The existing `powerMonitor` listeners are
+    retained as redundancy (and remain the primary signal for Win+L,
+    sleep, and macOS / Linux).
+  - `startSecureDesktopWatchdog` now polls every 750 ms (down from 1.5 s)
+    and prefers `inputDesktopProbe.isOnDefault()` as the recovery signal,
+    falling back to the old `getSystemIdleState` heuristic when the probe
+    is unavailable.
+
+  Expected behavior after the fix: UAC pop-up triggers `pauseForSecureDesktop`
+  within ~150 ms; UAC dismissal triggers `recoverFromSecureDesktop` within
+  another 150–300 ms. The main thread no longer accumulates stuck Win32
+  calls, so the 2-minute freeze is gone. The overlay still cannot render
+  on top of the UAC dialog itself — that requires SYSTEM-level injection
+  into the Winlogon desktop, which is intentionally blocked by Windows
+  and out of scope for a user-mode application.
+
+### Security
+
+- (Earlier 2026-05-16 entries preserved below.)
+
+---
+
 ## [Unreleased] - 2026-05-16
 
 ### Security

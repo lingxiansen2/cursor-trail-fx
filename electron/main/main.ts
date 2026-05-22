@@ -13,6 +13,7 @@ import {
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { inputDesktopProbe, type InputDesktopChange } from "./inputDesktop.js";
 import {
   defaultConfig,
   effectLabels,
@@ -52,8 +53,10 @@ let secureDesktopRecoveryTimer: NodeJS.Timeout | undefined;
 let secureDesktopWatchdogTimer: NodeJS.Timeout | undefined;
 let suspendOverlayTopmostUntil = 0;
 const overlayTopmostLevel: Parameters<BrowserWindow["setAlwaysOnTop"]>[1] = "floating";
+const overlayVisibleOnFullScreen = process.platform !== "win32";
 let isSettingsInteractionActive = false;
 let isSecureDesktopSuspended = false;
+let secureDesktopSuspendedAt = 0;
 
 const allowedDevServerUrl = "http://127.0.0.1:5173";
 const isDev = !app.isPackaged && process.env.VITE_DEV_SERVER_URL === allowedDevServerUrl;
@@ -139,6 +142,49 @@ function getAssetPath(fileName: string): string {
   return join(app.getAppPath(), "assets", fileName);
 }
 
+/**
+ * Returns true when the Win32 input desktop is currently held by something
+ * other than the user's normal Default desktop (UAC consent prompt, lock
+ * screen, screen saver, ...). Calling SetWindowPos / ShowWindow / similar
+ * window APIs while this is true risks blocking the main thread until the
+ * input desktop returns, so timer-driven reinforcement and cursor sampling
+ * must skip Win32 calls in that state.
+ *
+ * Returns false on non-Windows platforms.
+ */
+function isInputDesktopForeign(): boolean {
+  if (process.platform !== "win32") {
+    return false;
+  }
+  return !inputDesktopProbe.isOnDefault();
+}
+
+/**
+ * Closes a stale BrowserWindow without holding the main thread on
+ * DestroyWindow. hide() is invoked synchronously so the renderer stops
+ * producing frames immediately, while destroy() is deferred to the next
+ * event-loop tick and wrapped in try/catch so a blocking Win32 call (during
+ * UAC, for example) cannot freeze subsequent Electron event handling.
+ */
+function disposeOverlayWindow(staleWindow: BrowserWindow): void {
+  try {
+    if (!staleWindow.isDestroyed()) {
+      staleWindow.hide();
+    }
+  } catch (err) {
+    console.warn("[overlay] hide failed during dispose:", err);
+  }
+  setImmediate(() => {
+    try {
+      if (!staleWindow.isDestroyed()) {
+        staleWindow.destroy();
+      }
+    } catch (err) {
+      console.warn("[overlay] destroy failed during dispose:", err);
+    }
+  });
+}
+
 function applyOverlayBounds(): void {
   if (!mainWindow || mainWindow.isDestroyed()) {
     return;
@@ -150,8 +196,30 @@ function applyOverlayBounds(): void {
   sendCommand({ type: "overlay-bounds-changed", overlayBounds });
 }
 
+function raiseOverlayWithoutFocus(): void {
+  if (!mainWindow || mainWindow.isDestroyed() || !mainWindow.isVisible()) {
+    return;
+  }
+
+  if (process.platform === "win32") {
+    return;
+  }
+
+  try {
+    mainWindow.moveTop();
+  } catch {
+    // Ignore platform-specific z-order failures and rely on always-on-top.
+  }
+}
+
 function reinforceOverlayWindow(forceVisible: boolean): void {
   if (!mainWindow || mainWindow.isDestroyed()) {
+    return;
+  }
+
+  // Skip every Win32 setter when the input desktop is foreign — these calls
+  // can stall the main thread for the entire UAC/lock-screen session.
+  if (isInputDesktopForeign()) {
     return;
   }
 
@@ -167,8 +235,10 @@ function reinforceOverlayWindow(forceVisible: boolean): void {
     return;
   }
 
-  mainWindow.setAlwaysOnTop(true, overlayTopmostLevel);
-  mainWindow.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true });
+  if (!mainWindow.isAlwaysOnTop()) {
+    mainWindow.setAlwaysOnTop(true, overlayTopmostLevel);
+  }
+  mainWindow.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: overlayVisibleOnFullScreen });
   mainWindow.setSkipTaskbar(true);
   mainWindow.setFocusable(false);
   mainWindow.setIgnoreMouseEvents(!interactive, { forward: true });
@@ -179,7 +249,7 @@ function reinforceOverlayWindow(forceVisible: boolean): void {
   }
 
   if (forceVisible) {
-    mainWindow.showInactive();
+    raiseOverlayWithoutFocus();
   }
 }
 
@@ -199,7 +269,7 @@ function setSettingsInteractionActive(active: boolean): void {
     return;
   }
 
-  reinforceOverlayWindow(true);
+  reinforceOverlayWindow(false);
 }
 
 function startOverlayHealthLoop(): void {
@@ -243,11 +313,29 @@ function startSecureDesktopWatchdog(): void {
       return;
     }
 
-    const idleState = powerMonitor.getSystemIdleState(1);
-    if (idleState !== "locked" && idleState !== "unknown") {
-      scheduleSecureDesktopRecovery(`watchdog:${idleState}`, 200);
+    // Probe-driven path (Windows): the input desktop probe is the primary
+    // signal — if it reports Default again, the secure desktop session
+    // ended. Recover immediately with a short debounce.
+    if (process.platform === "win32" && inputDesktopProbe.isOnDefault()) {
+      scheduleSecureDesktopRecovery(`watchdog:input-desktop:${inputDesktopProbe.getName()}`, 150);
+      return;
     }
-  }, 1500);
+
+    // Legacy heuristic (covers macOS / Linux and a degraded probe on
+    // Windows). idleState !== "locked"/"unknown" implies the user is back.
+    const idleState = powerMonitor.getSystemIdleState(1);
+    const suspendedForMs = Date.now() - secureDesktopSuspendedAt;
+    const canRecoverNormally = idleState !== "locked" && idleState !== "unknown";
+    const shouldForceRecoverUnknown =
+      process.platform === "win32" && idleState === "unknown" && suspendedForMs >= 4000;
+
+    if (canRecoverNormally || shouldForceRecoverUnknown) {
+      const reason = shouldForceRecoverUnknown
+        ? `watchdog:${idleState}:timeout`
+        : `watchdog:${idleState}`;
+      scheduleSecureDesktopRecovery(reason, 200);
+    }
+  }, 750);
 }
 
 function stopSecureDesktopWatchdog(): void {
@@ -262,7 +350,13 @@ function resetRendererTrail(): void {
 }
 
 function pauseForSecureDesktop(reason: string): void {
+  if (isSecureDesktopSuspended) {
+    console.info(`[secure-desktop] pause ignored while already suspended: ${reason}`);
+    return;
+  }
+
   isSecureDesktopSuspended = true;
+  secureDesktopSuspendedAt = Date.now();
   clearSecureDesktopRecoveryTimer();
   startSecureDesktopWatchdog();
   setSettingsInteractionActive(false);
@@ -271,13 +365,17 @@ function pauseForSecureDesktop(reason: string): void {
   resetRendererTrail();
 
   if (settingsWindow && !settingsWindow.isDestroyed()) {
-    settingsWindow.close();
+    try {
+      settingsWindow.close();
+    } catch (err) {
+      console.warn("[secure-desktop] settings close failed:", err);
+    }
   }
 
   if (mainWindow && !mainWindow.isDestroyed()) {
     const staleWindow = mainWindow;
     mainWindow = undefined;
-    staleWindow.destroy();
+    disposeOverlayWindow(staleWindow);
   }
 
   console.info(`[secure-desktop] paused overlay: ${reason}`);
@@ -287,7 +385,7 @@ async function recreateOverlayWindow(): Promise<void> {
   if (mainWindow && !mainWindow.isDestroyed()) {
     const staleWindow = mainWindow;
     mainWindow = undefined;
-    staleWindow.destroy();
+    disposeOverlayWindow(staleWindow);
   }
 
   await createWindow();
@@ -302,13 +400,18 @@ async function recoverFromSecureDesktop(reason: string): Promise<void> {
   }
 
   isSecureDesktopSuspended = false;
+  secureDesktopSuspendedAt = 0;
   setSettingsInteractionActive(false);
   globalShortcut.unregisterAll();
   await recreateOverlayWindow();
   applyOverlayBounds();
   reinforceOverlayWindow(true);
   if (mainWindow && !mainWindow.isDestroyed()) {
-    mainWindow.show();
+    if (!mainWindow.isVisible()) {
+      mainWindow.showInactive();
+    } else {
+      raiseOverlayWithoutFocus();
+    }
   }
   registerHotkeys();
   startCursorLoop();
@@ -517,7 +620,7 @@ async function openSettingsWindow(): Promise<void> {
   settingsWindow.on("closed", () => {
     settingsWindow = undefined;
     setSettingsInteractionActive(false);
-    setTimeout(() => reinforceOverlayWindow(true), 120);
+    setTimeout(() => reinforceOverlayWindow(false), 120);
   });
 
   if (isDev) {
@@ -556,7 +659,7 @@ async function createWindow(): Promise<void> {
   });
 
   mainWindow.setAlwaysOnTop(true, overlayTopmostLevel);
-  mainWindow.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true });
+  mainWindow.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: overlayVisibleOnFullScreen });
   mainWindow.setMenu(null);
   mainWindow.webContents.on("will-navigate", (event) => event.preventDefault());
   mainWindow.webContents.on("will-redirect", (event) => event.preventDefault());
@@ -564,12 +667,12 @@ async function createWindow(): Promise<void> {
     scheduleSecureDesktopRecovery("render-process-gone", 300);
   });
   mainWindow.on("show", () => reinforceOverlayWindow(false));
-  mainWindow.on("restore", () => reinforceOverlayWindow(true));
+  mainWindow.on("restore", () => reinforceOverlayWindow(false));
   mainWindow.on("hide", () => {
     if (isSecureDesktopSuspended) {
       return;
     }
-    setTimeout(() => reinforceOverlayWindow(true), 120);
+    setTimeout(() => reinforceOverlayWindow(false), 120);
   });
   mainWindow.on("blur", () => {
     if (isSecureDesktopSuspended) {
@@ -586,7 +689,7 @@ async function createWindow(): Promise<void> {
   });
   mainWindow.once("ready-to-show", () => {
     applyOverlayBounds();
-    reinforceOverlayWindow(true);
+    reinforceOverlayWindow(false);
     setInteractive(!config.clickThroughDefault);
   });
 
@@ -624,6 +727,13 @@ function startCursorLoop(): void {
 
   function tick(): void {
     if (!mainWindow || mainWindow.isDestroyed()) {
+      return;
+    }
+
+    // Back off when the input desktop is foreign so we neither sample the
+    // cursor nor push IPC into a renderer whose window may be in limbo.
+    if (isInputDesktopForeign()) {
+      cursorTimer = setTimeout(tick, 250);
       return;
     }
 
@@ -724,16 +834,30 @@ app.whenReady().then(async () => {
 
   screen.on("display-added", () => {
     applyOverlayBounds();
-    setTimeout(() => reinforceOverlayWindow(true), 100);
+    setTimeout(() => reinforceOverlayWindow(false), 100);
   });
   screen.on("display-removed", () => {
     applyOverlayBounds();
-    setTimeout(() => reinforceOverlayWindow(true), 100);
+    setTimeout(() => reinforceOverlayWindow(false), 100);
   });
   screen.on("display-metrics-changed", () => {
     applyOverlayBounds();
-    setTimeout(() => reinforceOverlayWindow(true), 100);
+    setTimeout(() => reinforceOverlayWindow(false), 100);
   });
+
+  // Input desktop probe — covers UAC consent prompts that powerMonitor
+  // never reports. The probe is best-effort: if PowerShell is missing or
+  // the child crashes, the rest of the lock-screen / sleep handling keeps
+  // working through powerMonitor.
+  inputDesktopProbe.on("change", (event: InputDesktopChange) => {
+    console.info(`[input-desktop] ${event.from} -> ${event.to}`);
+    if (event.to === "Default") {
+      scheduleSecureDesktopRecovery(`input-desktop:${event.to}`, 150);
+    } else {
+      pauseForSecureDesktop(`input-desktop:${event.to}`);
+    }
+  });
+  inputDesktopProbe.start();
 
   powerMonitor.on("lock-screen", () => {
     pauseForSecureDesktop("lock-screen");
@@ -770,6 +894,7 @@ app.on("will-quit", () => {
   stopOverlayHealthLoop();
   clearSecureDesktopRecoveryTimer();
   stopSecureDesktopWatchdog();
+  inputDesktopProbe.stop();
   globalShortcut.unregisterAll();
 });
 
