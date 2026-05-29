@@ -4,7 +4,6 @@ import type { CursorPosition, CursorSnapshot, TrailCommand, TrailConfig, TrailEf
 const trailApi = {
   getConfig: (): Promise<TrailConfig> => ipcRenderer.invoke("trail:get-config"),
   getCursorSnapshot: (): Promise<CursorSnapshot> => ipcRenderer.invoke("trail:get-cursor-snapshot"),
-  setInteractive: (interactive: boolean): Promise<void> => ipcRenderer.invoke("trail:set-interactive", interactive),
   setEnabled: (enabled: boolean): Promise<void> => ipcRenderer.invoke("trail:set-enabled", enabled),
   setEffect: (effect: TrailEffectId): Promise<void> => ipcRenderer.invoke("trail:set-effect", effect),
   nextEffect: (): Promise<TrailEffectId> => ipcRenderer.invoke("trail:next-effect"),

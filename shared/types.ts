@@ -17,19 +17,20 @@ export type Rect = Point & Size;
 export type TrailEffectId =
   | "neonRibbon"
   | "cometTail"
-  | "prismPulse";
+  | "prismPulse"
+  | "inkBloom"
+  | "electricArc"
+  | "starWake";
 
 export type HotkeyConfig = {
   nextEffect: string;
   toggleEnabled: string;
-  toggleInteractive: string;
 };
 
 export type TrailConfig = {
   enabled: boolean;
   effect: TrailEffectId;
   hotkey: HotkeyConfig;
-  clickThroughDefault: boolean;
   fpsCap: number;
   opacity: number;
   trailLength: number;
@@ -44,7 +45,6 @@ export type CursorSnapshot = {
   cursor: Point;
   overlayBounds: Rect;
   displays: Rect[];
-  interactive: boolean;
   enabled: boolean;
   effect: TrailEffectId;
 };
@@ -57,10 +57,6 @@ export type TrailCommand =
   | {
       type: "enabled-changed";
       enabled: boolean;
-    }
-  | {
-      type: "interactive-changed";
-      interactive: boolean;
     }
   | {
       type: "config-changed";
@@ -85,7 +81,6 @@ export type TrailCommand =
 export type TrailRuntimeApi = {
   getConfig: () => Promise<TrailConfig>;
   getCursorSnapshot: () => Promise<CursorSnapshot>;
-  setInteractive: (interactive: boolean) => Promise<void>;
   setEnabled: (enabled: boolean) => Promise<void>;
   setEffect: (effect: TrailEffectId) => Promise<void>;
   nextEffect: () => Promise<TrailEffectId>;

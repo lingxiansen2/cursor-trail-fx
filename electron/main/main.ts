@@ -40,20 +40,27 @@ if (!app.requestSingleInstanceLock()) {
   process.exit(0);
 }
 
+app.commandLine.appendSwitch("disable-background-timer-throttling");
+app.commandLine.appendSwitch("disable-backgrounding-occluded-windows");
+app.commandLine.appendSwitch("disable-renderer-backgrounding");
+app.commandLine.appendSwitch("enable-gpu-rasterization");
+
 let mainWindow: BrowserWindow | undefined;
 let settingsWindow: BrowserWindow | undefined;
 let tray: Tray | undefined;
 let config: TrailConfig = defaultConfig;
 let enabled = defaultConfig.enabled;
 let currentEffect: TrailEffectId = defaultConfig.effect;
-let interactive = !defaultConfig.clickThroughDefault;
 let cursorTimer: NodeJS.Timeout | undefined;
 let overlayHealthTimer: NodeJS.Timeout | undefined;
 let secureDesktopRecoveryTimer: NodeJS.Timeout | undefined;
 let secureDesktopWatchdogTimer: NodeJS.Timeout | undefined;
 let suspendOverlayTopmostUntil = 0;
-const overlayTopmostLevel: Parameters<BrowserWindow["setAlwaysOnTop"]>[1] = "floating";
+const overlayTopmostLevel: Parameters<BrowserWindow["setAlwaysOnTop"]>[1] = "screen-saver";
+const overlayTopmostRelativeLevel = 1;
 const overlayVisibleOnFullScreen = process.platform !== "win32";
+const shellPreviewGuardBandPx = 96;
+const shellPreviewSuspendMs = 900;
 let isSettingsInteractionActive = false;
 let isSecureDesktopSuspended = false;
 let secureDesktopSuspendedAt = 0;
@@ -88,16 +95,45 @@ function getDisplayRects(): Rect[] {
   return screen.getAllDisplays().map((display) => display.bounds);
 }
 
+function getDisplayWorkAreaRects(): Rect[] {
+  return screen.getAllDisplays().map((display) => display.workArea);
+}
+
 function getOverlayBounds(): Rect {
-  return unionRects(getDisplayRects());
+  return unionRects(getDisplayWorkAreaRects());
+}
+
+function isNearShellPreviewArea(point: Electron.Point): boolean {
+  return screen.getAllDisplays().some((display) => {
+    const { bounds, workArea } = display;
+    const inDisplay =
+      point.x >= bounds.x &&
+      point.x < bounds.x + bounds.width &&
+      point.y >= bounds.y &&
+      point.y < bounds.y + bounds.height;
+    if (!inDisplay) {
+      return false;
+    }
+
+    const bottomTaskbar = workArea.y + workArea.height < bounds.y + bounds.height;
+    const topTaskbar = workArea.y > bounds.y;
+    const leftTaskbar = workArea.x > bounds.x;
+    const rightTaskbar = workArea.x + workArea.width < bounds.x + bounds.width;
+
+    return (
+      (bottomTaskbar && point.y >= workArea.y + workArea.height - shellPreviewGuardBandPx) ||
+      (topTaskbar && point.y <= workArea.y + shellPreviewGuardBandPx) ||
+      (leftTaskbar && point.x <= workArea.x + shellPreviewGuardBandPx) ||
+      (rightTaskbar && point.x >= workArea.x + workArea.width - shellPreviewGuardBandPx)
+    );
+  });
 }
 
 function getCursorSnapshot(): CursorSnapshot {
   return {
     cursor: screen.getCursorScreenPoint(),
     overlayBounds: getOverlayBounds(),
-    displays: getDisplayRects(),
-    interactive,
+    displays: getDisplayWorkAreaRects(),
     enabled,
     effect: currentEffect
   };
@@ -191,6 +227,7 @@ function applyOverlayBounds(): void {
   }
 
   const overlayBounds = getOverlayBounds();
+  console.info(`[overlay] bounds ${overlayBounds.x},${overlayBounds.y} ${overlayBounds.width}x${overlayBounds.height}`);
   mainWindow.setBounds(overlayBounds, false);
   reinforceOverlayWindow(false);
   sendCommand({ type: "overlay-bounds-changed", overlayBounds });
@@ -230,31 +267,47 @@ function reinforceOverlayWindow(forceVisible: boolean): void {
   }
 
   if (isSettingsInteractionActive || Date.now() < suspendOverlayTopmostUntil) {
-    mainWindow.setAlwaysOnTop(false);
-    mainWindow.setIgnoreMouseEvents(!interactive, { forward: true });
+    mainWindow.setIgnoreMouseEvents(true, { forward: true });
     return;
   }
 
-  if (!mainWindow.isAlwaysOnTop()) {
-    mainWindow.setAlwaysOnTop(true, overlayTopmostLevel);
-  }
+  raiseOverlayWindow(forceVisible);
   mainWindow.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: overlayVisibleOnFullScreen });
   mainWindow.setSkipTaskbar(true);
   mainWindow.setFocusable(false);
-  mainWindow.setIgnoreMouseEvents(!interactive, { forward: true });
+  mainWindow.setIgnoreMouseEvents(true, { forward: true });
+}
 
-  if (forceVisible && !mainWindow.isVisible()) {
-    mainWindow.showInactive();
+function raiseOverlayWindow(forceVisible: boolean): void {
+  if (!mainWindow || mainWindow.isDestroyed()) {
     return;
   }
 
-  if (forceVisible) {
-    raiseOverlayWithoutFocus();
+  // Re-applying the level fixes cases where Windows reorders a transparent,
+  // click-through overlay below the active Explorer/window-manager surface.
+  mainWindow.setAlwaysOnTop(false);
+  mainWindow.setAlwaysOnTop(true, overlayTopmostLevel, overlayTopmostRelativeLevel);
+  if (forceVisible && !mainWindow.isVisible()) {
+    mainWindow.showInactive();
+  } else if (forceVisible) {
+    mainWindow.showInactive();
+  }
+
+  if (typeof mainWindow.moveTop === "function") {
+    mainWindow.moveTop();
   }
 }
 
 function suspendOverlayTopmost(durationMs: number): void {
   suspendOverlayTopmostUntil = Math.max(suspendOverlayTopmostUntil, Date.now() + durationMs);
+}
+
+function resumeOverlayTopmost(): void {
+  isSettingsInteractionActive = false;
+  suspendOverlayTopmostUntil = 0;
+  reinforceOverlayWindow(true);
+  setTimeout(() => reinforceOverlayWindow(true), 120);
+  setTimeout(() => reinforceOverlayWindow(true), 500);
 }
 
 function setSettingsInteractionActive(active: boolean): void {
@@ -269,7 +322,7 @@ function setSettingsInteractionActive(active: boolean): void {
     return;
   }
 
-  reinforceOverlayWindow(false);
+  resumeOverlayTopmost();
 }
 
 function startOverlayHealthLoop(): void {
@@ -278,8 +331,11 @@ function startOverlayHealthLoop(): void {
   }
 
   overlayHealthTimer = setInterval(() => {
-    reinforceOverlayWindow(false);
-  }, 3000);
+    if (Date.now() < suspendOverlayTopmostUntil) {
+      return;
+    }
+    reinforceOverlayWindow(true);
+  }, 750);
 }
 
 function stopCursorLoop(): void {
@@ -432,16 +488,6 @@ function scheduleSecureDesktopRecovery(reason: string, delayMs = 900): void {
   }, delayMs);
 }
 
-function setInteractive(nextInteractive: boolean): void {
-  interactive = nextInteractive;
-  if (mainWindow && !mainWindow.isDestroyed()) {
-    mainWindow.setIgnoreMouseEvents(!interactive, { forward: true });
-    reinforceOverlayWindow(false);
-  }
-  sendCommand({ type: "interactive-changed", interactive });
-  updateTrayMenu();
-}
-
 function setEnabled(nextEnabled: boolean): void {
   enabled = nextEnabled;
   config = { ...config, enabled };
@@ -473,16 +519,14 @@ function applyNewConfig(nextConfig: TrailConfig): void {
   config = nextConfig;
   currentEffect = nextConfig.effect;
   enabled = nextConfig.enabled;
-  interactive = !nextConfig.clickThroughDefault;
 
   // Push the full config first so the renderer updates opacity, lineWidth,
   // color, trailLength, particleCount, secondaryColor, etc. in one shot.
   sendCommand({ type: "config-changed", config: nextConfig });
   sendCommand({ type: "enabled-changed", enabled });
-  sendCommand({ type: "interactive-changed", interactive });
 
   if (mainWindow && !mainWindow.isDestroyed()) {
-    mainWindow.setIgnoreMouseEvents(!interactive, { forward: true });
+    mainWindow.setIgnoreMouseEvents(true, { forward: true });
   }
 
   globalShortcut.unregisterAll();
@@ -536,12 +580,6 @@ function updateTrayMenu(): void {
           click: () => setEffect(effect)
         }))
       },
-      {
-        label: interactive ? "启用穿透模式" : "退出穿透模式",
-        accelerator: config.hotkey.toggleInteractive,
-        click: () => setInteractive(!interactive)
-      },
-      { type: "separator" },
       {
         label: "设置...",
         click: () => {
@@ -616,11 +654,15 @@ async function openSettingsWindow(): Promise<void> {
   });
   settingsWindow.on("blur", () => {
     suspendOverlayTopmost(1200);
+    setTimeout(() => {
+      if (!settingsWindow || settingsWindow.isDestroyed() || !settingsWindow.isFocused()) {
+        resumeOverlayTopmost();
+      }
+    }, 160);
   });
   settingsWindow.on("closed", () => {
     settingsWindow = undefined;
-    setSettingsInteractionActive(false);
-    setTimeout(() => reinforceOverlayWindow(false), 120);
+    resumeOverlayTopmost();
   });
 
   if (isDev) {
@@ -654,27 +696,31 @@ async function createWindow(): Promise<void> {
       preload: join(__dirname, "..", "preload", "index.cjs"),
       contextIsolation: true,
       nodeIntegration: false,
-      sandbox: true
+      sandbox: true,
+      backgroundThrottling: false
     }
   });
 
-  mainWindow.setAlwaysOnTop(true, overlayTopmostLevel);
+  mainWindow.setAlwaysOnTop(true, overlayTopmostLevel, overlayTopmostRelativeLevel);
   mainWindow.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: overlayVisibleOnFullScreen });
   mainWindow.setMenu(null);
   mainWindow.webContents.on("will-navigate", (event) => event.preventDefault());
   mainWindow.webContents.on("will-redirect", (event) => event.preventDefault());
   mainWindow.webContents.on("render-process-gone", () => {
+    console.warn("[overlay] renderer process gone");
     scheduleSecureDesktopRecovery("render-process-gone", 300);
   });
   mainWindow.on("show", () => reinforceOverlayWindow(false));
   mainWindow.on("restore", () => reinforceOverlayWindow(false));
   mainWindow.on("hide", () => {
+    console.info("[overlay] hide");
     if (isSecureDesktopSuspended) {
       return;
     }
     setTimeout(() => reinforceOverlayWindow(false), 120);
   });
   mainWindow.on("blur", () => {
+    console.info("[overlay] blur");
     if (isSecureDesktopSuspended) {
       return;
     }
@@ -685,12 +731,13 @@ async function createWindow(): Promise<void> {
     setTimeout(() => reinforceOverlayWindow(false), 60);
   });
   mainWindow.on("closed", () => {
+    console.info("[overlay] closed");
     mainWindow = undefined;
   });
   mainWindow.once("ready-to-show", () => {
     applyOverlayBounds();
-    reinforceOverlayWindow(false);
-    setInteractive(!config.clickThroughDefault);
+    reinforceOverlayWindow(true);
+    mainWindow?.setIgnoreMouseEvents(true, { forward: true });
   });
 
   if (isDev) {
@@ -703,8 +750,7 @@ async function createWindow(): Promise<void> {
 function registerHotkeys(): void {
   const hotkeys: Array<[string, () => void]> = [
     [config.hotkey.nextEffect, switchToNextEffect],
-    [config.hotkey.toggleEnabled, () => setEnabled(!enabled)],
-    [config.hotkey.toggleInteractive, () => setInteractive(!interactive)]
+    [config.hotkey.toggleEnabled, () => setEnabled(!enabled)]
   ];
 
   for (const [accelerator, handler] of hotkeys) {
@@ -720,8 +766,8 @@ function startCursorLoop(): void {
     return;
   }
 
-  const sampleRateHz = Math.max(120, config.fpsCap);
-  const intervalMs = Math.max(3, Math.round(1000 / sampleRateHz));
+  const sampleRateHz = Math.max(500, config.fpsCap * 2);
+  const intervalMs = Math.max(1, Math.round(1000 / sampleRateHz));
   let expectedTime = performance.now();
   let lastCursor: { x: number; y: number } | undefined;
 
@@ -738,12 +784,16 @@ function startCursorLoop(): void {
     }
 
     const cursor = screen.getCursorScreenPoint();
+    if (isNearShellPreviewArea(cursor)) {
+      suspendOverlayTopmost(shellPreviewSuspendMs);
+    }
+
     if (!lastCursor || cursor.x !== lastCursor.x || cursor.y !== lastCursor.y) {
       lastCursor = cursor;
       const position: CursorPosition = {
         x: cursor.x,
         y: cursor.y,
-        timestampMs: Date.now()
+        timestampMs: performance.timeOrigin + performance.now()
       };
       mainWindow.webContents.send("trail:cursor-position", position);
     }
@@ -763,12 +813,6 @@ function registerIpc(): void {
   ipcMain.handle("trail:get-cursor-snapshot", (event) =>
     isTrustedSender(event.senderFrame?.url) ? getCursorSnapshot() : undefined
   );
-  ipcMain.handle("trail:set-interactive", (event, nextInteractive: boolean) => {
-    if (!isTrustedSender(event.senderFrame?.url) || typeof nextInteractive !== "boolean") {
-      return;
-    }
-    setInteractive(nextInteractive);
-  });
   ipcMain.handle("trail:set-enabled", (event, nextEnabled: boolean) => {
     if (!isTrustedSender(event.senderFrame?.url) || typeof nextEnabled !== "boolean") {
       return;
@@ -807,6 +851,7 @@ function registerIpc(): void {
     await saveConfig(merged);
     applyNewConfig(merged);
     app.setLoginItemSettings({ openAtLogin: Boolean(autoLaunch) });
+    resumeOverlayTopmost();
     return true;
   });
   ipcMain.handle("settings:open-user-data", (event) => {
@@ -823,7 +868,6 @@ app.whenReady().then(async () => {
   config = await loadConfig();
   enabled = config.enabled;
   currentEffect = config.effect;
-  interactive = !config.clickThroughDefault;
 
   registerIpc();
   createTray();

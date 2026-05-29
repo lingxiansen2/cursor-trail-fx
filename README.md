@@ -18,18 +18,20 @@ npm.cmd run build
 
 - `Ctrl+Alt+J`: switch to the next trail effect.
 - `Ctrl+Alt+K`: enable or disable the trail.
-- `Ctrl+Alt+P`: toggle click-through mode.
-- Tray menu: enable/disable, next effect, choose a specific effect, toggle click-through, quit.
+- Tray menu: enable/disable, next effect, choose a specific effect, quit.
 
 ## Effects
 
 - Neon ribbon
 - Comet tail
 - Prism pulse
+- Ink bloom
+- Electric arc
+- Star wake
 
 ## Notes
 
 - The app creates a transparent, frameless, always-on-top Electron overlay across the current virtual desktop.
-- Click-through is enabled by default, so the overlay does not block normal mouse use.
+- The overlay is always click-through, so it does not block normal mouse use.
 - Rendering uses Canvas 2D for the first version. The effect system is plugin-shaped so WebGL effects can be added later.
 - All cat model, sprite, and pet state-machine code has been removed.

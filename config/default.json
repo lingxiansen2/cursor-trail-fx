@@ -3,10 +3,8 @@
   "effect": "neonRibbon",
   "hotkey": {
     "nextEffect": "CommandOrControl+Alt+J",
-    "toggleEnabled": "CommandOrControl+Alt+K",
-    "toggleInteractive": "CommandOrControl+Alt+P"
+    "toggleEnabled": "CommandOrControl+Alt+K"
   },
-  "clickThroughDefault": true,
   "fpsCap": 240,
   "opacity": 0.92,
   "trailLength": 120,

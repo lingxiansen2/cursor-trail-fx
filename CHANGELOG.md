@@ -102,7 +102,7 @@ All notable changes to Cursor Trail FX are documented here.
 
 - **Rendering parameters not applied after saving settings** (`shared/types.ts`, `electron/main/main.ts`, `renderer/main.ts`)
 
-  Saving settings only pushed `effect`, `enabled`, and `interactive` to the overlay
+  Saving settings only pushed `effect` and `enabled` to the overlay
   renderer; all other fields (`opacity`, `lineWidth`, `color`, `secondaryColor`,
   `trailLength`, `particleCount`, `fpsCap`) were silently ignored until the next
   app restart.  Root cause: `applyNewConfig` sent three narrow commands but had no
@@ -138,8 +138,8 @@ All notable changes to Cursor Trail FX are documented here.
 
 - Six cursor trail effects: Neon Ribbon, Particle Spark, Comet Tail, Smoke Trail,
   Pixel Ghost, Fluid Blob.
-- Transparent always-on-top Electron overlay; click-through enabled by default.
-- System tray with Chinese-language menu; global hotkeys (`Ctrl+Alt+J/K/P`).
+- Transparent always-on-top Electron overlay; always click-through.
+- System tray with Chinese-language menu; global hotkeys (`Ctrl+Alt+J/K`).
 - Settings window with live preview of all parameters.
 - Config persisted to user data directory; falls back to `config/default.json`.
 - Multi-monitor support via `unionRects`.

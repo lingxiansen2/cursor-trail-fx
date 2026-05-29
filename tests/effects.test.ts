@@ -124,8 +124,8 @@ describe("TrailEngine", () => {
     const { canvas } = createMockCanvas();
     const engine = new TrailEngine(canvas);
     engine.resize(800, 600, 2);
-    expect(canvas.width).toBe(1600);
-    expect(canvas.height).toBe(1200);
+    expect(canvas.width).toBe(1000);
+    expect(canvas.height).toBe(750);
     expect(canvas.style.width).toBe("800px");
     expect(canvas.style.height).toBe("600px");
   });

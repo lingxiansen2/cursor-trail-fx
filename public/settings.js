@@ -100,14 +100,10 @@ async function init() {
   bindSlider("fpsCap", (value) => `${value}Hz`);
 
   $("enabled").checked = config.enabled !== false;
-  $("clickThroughDefault").checked = config.clickThroughDefault !== false;
   $("autoLaunch").checked = Boolean(autoLaunch);
 
   $("hotkey-nextEffect").value = config.hotkey?.nextEffect ?? "CommandOrControl+Alt+J";
   $("hotkey-toggleEnabled").value = config.hotkey?.toggleEnabled ?? "CommandOrControl+Alt+K";
-  $("hotkey-toggleInteractive").value =
-    config.hotkey?.toggleInteractive ?? "CommandOrControl+Alt+P";
-
   $("loading").style.display = "none";
   $("body").hidden = false;
 }
@@ -126,11 +122,9 @@ async function save() {
     lineWidth: Number.parseFloat($("lineWidth").value),
     fpsCap: Number.parseInt($("fpsCap").value, 10),
     enabled: $("enabled").checked,
-    clickThroughDefault: $("clickThroughDefault").checked,
     hotkey: {
       nextEffect: $("hotkey-nextEffect").value.trim(),
-      toggleEnabled: $("hotkey-toggleEnabled").value.trim(),
-      toggleInteractive: $("hotkey-toggleInteractive").value.trim()
+      toggleEnabled: $("hotkey-toggleEnabled").value.trim()
     }
   };
 

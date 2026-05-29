@@ -3,13 +3,19 @@ import type { Rect, TrailConfig, TrailEffectId } from "./types.js";
 export const trailEffects: readonly TrailEffectId[] = [
   "neonRibbon",
   "cometTail",
-  "prismPulse"
+  "prismPulse",
+  "inkBloom",
+  "electricArc",
+  "starWake"
 ];
 
 export const effectLabels: Record<TrailEffectId, string> = {
   neonRibbon: "霓虹丝带",
   cometTail: "彗星尾巴",
-  prismPulse: "棱镜脉冲"
+  prismPulse: "棱镜脉冲",
+  inkBloom: "墨滴流体",
+  electricArc: "闪电裂隙",
+  starWake: "星尘星座"
 };
 
 export type EffectRegistryEntry = {
@@ -29,10 +35,8 @@ export const defaultConfig: TrailConfig = {
   effect: "neonRibbon",
   hotkey: {
     nextEffect: "CommandOrControl+Alt+J",
-    toggleEnabled: "CommandOrControl+Alt+K",
-    toggleInteractive: "CommandOrControl+Alt+P"
+    toggleEnabled: "CommandOrControl+Alt+K"
   },
-  clickThroughDefault: true,
   fpsCap: 240,
   opacity: 0.92,
   trailLength: 120,
@@ -114,11 +118,7 @@ export function mergeConfig(config: Partial<TrailConfig> = {}): TrailConfig {
       toggleEnabled:
         srcHotkey && isAccelerator(srcHotkey.toggleEnabled)
           ? srcHotkey.toggleEnabled
-          : defaultConfig.hotkey.toggleEnabled,
-      toggleInteractive:
-        srcHotkey && isAccelerator(srcHotkey.toggleInteractive)
-          ? srcHotkey.toggleInteractive
-          : defaultConfig.hotkey.toggleInteractive
+          : defaultConfig.hotkey.toggleEnabled
     },
     windowSize: {
       ...defaultConfig.windowSize,

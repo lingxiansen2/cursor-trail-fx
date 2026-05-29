@@ -1,5 +1,6 @@
 import { defaultConfig, effectLabels, isTrailEffect, mergeConfig, nextTrailEffect } from "../shared/config.js";
-import type { CursorPosition, CursorSnapshot, Point, Rect, TrailConfig, TrailEffectId, TrailRuntimeApi } from "../shared/types.js";
+import type { CursorPosition, CursorSnapshot, Point, Rect, TrailConfig, TrailRuntimeApi } from "../shared/types.js";
+import { TrailAnimator } from "./trail/trailAnimator.js";
 import { TrailEngine } from "./trail/trailEngine.js";
 import "./styles.css";
 
@@ -10,7 +11,6 @@ if (!app) {
 const appRoot = app;
 
 function createBrowserPreviewApi(): TrailRuntimeApi {
-  let interactive = true;
   let enabled = defaultConfig.enabled;
   let effect = defaultConfig.effect;
   let cursor: Point = {
@@ -26,7 +26,7 @@ function createBrowserPreviewApi(): TrailRuntimeApi {
     const position: CursorPosition = {
       x: event.clientX,
       y: event.clientY,
-      timestampMs: Date.now()
+      timestampMs: performance.timeOrigin + performance.now()
     };
     cursorListeners.forEach((listener) => listener(position));
   });
@@ -49,10 +49,6 @@ function createBrowserPreviewApi(): TrailRuntimeApi {
       return;
     }
 
-    if (key === "p") {
-      interactive = !interactive;
-      commandListeners.forEach((listener) => listener({ type: "interactive-changed", interactive }));
-    }
   });
 
   function makeSnapshot(): CursorSnapshot {
@@ -66,7 +62,6 @@ function createBrowserPreviewApi(): TrailRuntimeApi {
       cursor,
       overlayBounds,
       displays: [overlayBounds],
-      interactive,
       enabled,
       effect
     };
@@ -75,10 +70,6 @@ function createBrowserPreviewApi(): TrailRuntimeApi {
   return {
     getConfig: async () => defaultConfig,
     getCursorSnapshot: async () => makeSnapshot(),
-    setInteractive: async (nextInteractive) => {
-      interactive = nextInteractive;
-      commandListeners.forEach((listener) => listener({ type: "interactive-changed", interactive }));
-    },
     setEnabled: async (nextEnabled) => {
       enabled = nextEnabled;
       commandListeners.forEach((listener) => listener({ type: "enabled-changed", enabled }));
@@ -134,13 +125,6 @@ function renderShell(config: TrailConfig): {
   return { canvas, badge };
 }
 
-function toLocalPoint(position: CursorPosition, overlayX: number, overlayY: number): Point {
-  return {
-    x: position.x - overlayX,
-    y: position.y - overlayY
-  };
-}
-
 function showBadge(badge: HTMLDivElement, text: string, warning = false): void {
   badge.textContent = text;
   badge.classList.toggle("mode-badge-warning", warning);
@@ -153,7 +137,7 @@ async function bootstrap(): Promise<void> {
   let cursorSnapshot = await runtime.getCursorSnapshot();
   const shell = renderShell(config);
   const engine = new TrailEngine(shell.canvas, config);
-  let lastFrame = performance.now();
+  const animator = new TrailAnimator(engine, cursorSnapshot.overlayBounds);
 
   function resize(): void {
     engine.resize(window.innerWidth, window.innerHeight);
@@ -184,18 +168,12 @@ async function bootstrap(): Promise<void> {
       return;
     }
 
-    if (command.type === "interactive-changed") {
-      showBadge(shell.badge, command.interactive ? "Interactive" : "Click-through");
-      return;
-    }
-
     if (command.type === "overlay-bounds-changed") {
       cursorSnapshot = {
         ...cursorSnapshot,
         overlayBounds: command.overlayBounds
       };
-      overlayOffset.x = command.overlayBounds.x;
-      overlayOffset.y = command.overlayBounds.y;
+      animator.setOverlayBounds(command.overlayBounds);
       resize();
       return;
     }
@@ -206,39 +184,27 @@ async function bootstrap(): Promise<void> {
     }
 
     if (command.type === "reset-trail") {
-      engine.clear();
-      lastFrame = performance.now();
+      animator.reset();
     }
   });
 
-  const overlayOffset = { x: cursorSnapshot.overlayBounds.x, y: cursorSnapshot.overlayBounds.y };
-
   const disposeCursor = runtime.onCursorPosition((position) => {
-    engine.pushCursor(toLocalPoint(position, overlayOffset.x, overlayOffset.y), performance.now());
+    animator.pushCursor(position);
   });
 
   window.addEventListener("beforeunload", () => {
     disposeCommand();
     disposeCursor();
     window.removeEventListener("resize", resize);
-    engine.clear();
+    animator.stop();
   });
-
-  function frame(now: number): void {
-    const deltaMs = Math.min(50, now - lastFrame);
-    lastFrame = now;
-    engine.update(deltaMs, now);
-    engine.render();
-    window.requestAnimationFrame(frame);
-  }
 
   const initialPoint: CursorPosition = {
     x: cursorSnapshot.cursor.x,
     y: cursorSnapshot.cursor.y,
-    timestampMs: performance.now()
+    timestampMs: performance.timeOrigin + performance.now()
   };
-  engine.pushCursor(toLocalPoint(initialPoint, overlayOffset.x, overlayOffset.y), initialPoint.timestampMs);
-  window.requestAnimationFrame(frame);
+  animator.start(initialPoint);
 }
 
 bootstrap().catch((error) => {
