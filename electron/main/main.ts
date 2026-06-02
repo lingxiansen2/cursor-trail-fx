@@ -48,6 +48,7 @@ app.commandLine.appendSwitch("enable-gpu-rasterization");
 let mainWindow: BrowserWindow | undefined;
 let settingsWindow: BrowserWindow | undefined;
 let tray: Tray | undefined;
+let trayMenu: Menu | undefined;
 let config: TrailConfig = defaultConfig;
 let enabled = defaultConfig.enabled;
 let currentEffect: TrailEffectId = defaultConfig.effect;
@@ -56,11 +57,12 @@ let overlayHealthTimer: NodeJS.Timeout | undefined;
 let secureDesktopRecoveryTimer: NodeJS.Timeout | undefined;
 let secureDesktopWatchdogTimer: NodeJS.Timeout | undefined;
 let suspendOverlayTopmostUntil = 0;
-const overlayTopmostLevel: Parameters<BrowserWindow["setAlwaysOnTop"]>[1] = "screen-saver";
-const overlayTopmostRelativeLevel = 1;
+const overlayTopmostLevel: Parameters<BrowserWindow["setAlwaysOnTop"]>[1] = "status";
+const overlayTopmostRelativeLevel = 0;
 const overlayVisibleOnFullScreen = process.platform !== "win32";
 const shellPreviewGuardBandPx = 96;
 const shellPreviewSuspendMs = 900;
+const trayMenuSuspendMs = 60_000;
 let isSettingsInteractionActive = false;
 let isSecureDesktopSuspended = false;
 let secureDesktopSuspendedAt = 0;
@@ -283,31 +285,51 @@ function raiseOverlayWindow(forceVisible: boolean): void {
     return;
   }
 
-  // Re-applying the level fixes cases where Windows reorders a transparent,
-  // click-through overlay below the active Explorer/window-manager surface.
-  mainWindow.setAlwaysOnTop(false);
-  mainWindow.setAlwaysOnTop(true, overlayTopmostLevel, overlayTopmostRelativeLevel);
+  if (forceVisible) {
+    mainWindow.setAlwaysOnTop(false);
+    mainWindow.setAlwaysOnTop(true, overlayTopmostLevel, overlayTopmostRelativeLevel);
+  } else if (!mainWindow.isAlwaysOnTop()) {
+    mainWindow.setAlwaysOnTop(true, overlayTopmostLevel, overlayTopmostRelativeLevel);
+  }
+
   if (forceVisible && !mainWindow.isVisible()) {
-    mainWindow.showInactive();
-  } else if (forceVisible) {
     mainWindow.showInactive();
   }
 
-  if (typeof mainWindow.moveTop === "function") {
+  if (forceVisible && typeof mainWindow.moveTop === "function" && !isNearShellPreviewArea(screen.getCursorScreenPoint())) {
     mainWindow.moveTop();
   }
 }
 
 function suspendOverlayTopmost(durationMs: number): void {
   suspendOverlayTopmostUntil = Math.max(suspendOverlayTopmostUntil, Date.now() + durationMs);
+  if (!mainWindow || mainWindow.isDestroyed()) {
+    return;
+  }
+
+  mainWindow.setAlwaysOnTop(false);
+  mainWindow.setIgnoreMouseEvents(true, { forward: true });
+}
+
+function restoreOverlayTopmost(): void {
+  if (!mainWindow || mainWindow.isDestroyed() || isInputDesktopForeign() || isSecureDesktopSuspended) {
+    return;
+  }
+
+  mainWindow.setAlwaysOnTop(false);
+  mainWindow.setAlwaysOnTop(true, overlayTopmostLevel, overlayTopmostRelativeLevel);
+  mainWindow.setIgnoreMouseEvents(true, { forward: true });
+  if (typeof mainWindow.moveTop === "function" && !isNearShellPreviewArea(screen.getCursorScreenPoint())) {
+    mainWindow.moveTop();
+  }
 }
 
 function resumeOverlayTopmost(): void {
   isSettingsInteractionActive = false;
   suspendOverlayTopmostUntil = 0;
-  reinforceOverlayWindow(true);
-  setTimeout(() => reinforceOverlayWindow(true), 120);
-  setTimeout(() => reinforceOverlayWindow(true), 500);
+  restoreOverlayTopmost();
+  setTimeout(restoreOverlayTopmost, 120);
+  setTimeout(restoreOverlayTopmost, 500);
 }
 
 function setSettingsInteractionActive(active: boolean): void {
@@ -331,11 +353,24 @@ function startOverlayHealthLoop(): void {
   }
 
   overlayHealthTimer = setInterval(() => {
-    if (Date.now() < suspendOverlayTopmostUntil) {
+    if (
+      !mainWindow ||
+      mainWindow.isDestroyed() ||
+      isInputDesktopForeign() ||
+      isSecureDesktopSuspended ||
+      isSettingsInteractionActive ||
+      Date.now() < suspendOverlayTopmostUntil
+    ) {
       return;
     }
-    reinforceOverlayWindow(true);
-  }, 750);
+
+    if (!mainWindow.isVisible()) {
+      mainWindow.showInactive();
+    }
+    if (!mainWindow.isAlwaysOnTop()) {
+      mainWindow.setAlwaysOnTop(true, overlayTopmostLevel, overlayTopmostRelativeLevel);
+    }
+  }, 5000);
 }
 
 function stopCursorLoop(): void {
@@ -551,60 +586,78 @@ function createTrayImage(): Electron.NativeImage {
 }
 
 function updateTrayMenu(): void {
+  const autoLaunch = app.getLoginItemSettings().openAtLogin;
+  trayMenu = Menu.buildFromTemplate([
+    { label: enabled ? "状态：特效已开启" : "状态：特效已关闭", enabled: false },
+    { label: `当前效果：${effectLabels[currentEffect]}`, enabled: false },
+    { type: "separator" },
+    {
+      label: enabled ? "关闭光标特效" : "开启光标特效",
+      accelerator: config.hotkey.toggleEnabled,
+      click: () => {
+        resumeOverlayTopmost();
+        setEnabled(!enabled);
+      }
+    },
+    {
+      label: "切换下一个效果",
+      accelerator: config.hotkey.nextEffect,
+      click: () => {
+        resumeOverlayTopmost();
+        switchToNextEffect();
+      }
+    },
+    {
+      label: "选择效果",
+      submenu: trailEffects.map((effect) => ({
+        label: effectLabels[effect],
+        type: "radio" as const,
+        checked: effect === currentEffect,
+        click: () => {
+          resumeOverlayTopmost();
+          setEffect(effect);
+        }
+      }))
+    },
+    {
+      label: "设置...",
+      click: () => {
+        suspendOverlayTopmost(trayMenuSuspendMs);
+        openSettingsWindow().catch(console.error);
+      }
+    },
+    {
+      label: "开机自动启动",
+      type: "checkbox",
+      checked: autoLaunch,
+      click: () => {
+        resumeOverlayTopmost();
+        app.setLoginItemSettings({ openAtLogin: !autoLaunch });
+        updateTrayMenu();
+      }
+    },
+    { type: "separator" },
+    { label: "退出", role: "quit" }
+  ]);
+}
+
+function openTrayMenu(): void {
   if (!tray) {
     return;
   }
 
-  const autoLaunch = app.getLoginItemSettings().openAtLogin;
-  tray.setContextMenu(
-    Menu.buildFromTemplate([
-      { label: enabled ? "状态：特效已开启" : "状态：特效已关闭", enabled: false },
-      { label: `当前效果：${effectLabels[currentEffect]}`, enabled: false },
-      { type: "separator" },
-      {
-        label: enabled ? "关闭光标特效" : "开启光标特效",
-        accelerator: config.hotkey.toggleEnabled,
-        click: () => setEnabled(!enabled)
-      },
-      {
-        label: "切换下一个效果",
-        accelerator: config.hotkey.nextEffect,
-        click: switchToNextEffect
-      },
-      {
-        label: "选择效果",
-        submenu: trailEffects.map((effect) => ({
-          label: effectLabels[effect],
-          type: "radio" as const,
-          checked: effect === currentEffect,
-          click: () => setEffect(effect)
-        }))
-      },
-      {
-        label: "设置...",
-        click: () => {
-          openSettingsWindow().catch(console.error);
-        }
-      },
-      {
-        label: "开机自动启动",
-        type: "checkbox",
-        checked: autoLaunch,
-        click: () => {
-          app.setLoginItemSettings({ openAtLogin: !autoLaunch });
-          updateTrayMenu();
-        }
-      },
-      { type: "separator" },
-      { label: "退出", role: "quit" }
-    ])
-  );
+  suspendOverlayTopmost(trayMenuSuspendMs);
+  updateTrayMenu();
+  tray.popUpContextMenu(trayMenu);
 }
 
 function createTray(): void {
   tray = new Tray(createTrayImage());
   tray.setToolTip("Cursor Trail FX");
+  tray.on("click", () => suspendOverlayTopmost(trayMenuSuspendMs));
+  tray.on("right-click", openTrayMenu);
   tray.on("double-click", () => {
+    suspendOverlayTopmost(trayMenuSuspendMs);
     openSettingsWindow().catch(console.error);
   });
   updateTrayMenu();
